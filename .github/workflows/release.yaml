@@ -1,6 +1,8 @@
 name: build
 on:
   workflow_dispatch
+env:
+  IMAGE=quay.io/rh_integration/selenium-standalone-chrome
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -12,5 +14,5 @@ jobs:
           registry: quay.io
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_ROBOT_TOKEN }}
-      - run: docker build . -t quay.io/rh_integration/selenium-standalone-chrome --build-arg customca=${{ secrets.CUSTOMCA }}
-      - run: docker push quay.io/rh_integration/selenium-standalone-chrome
+      - run: docker build . -t $IMAGE:`date -u +%Y%m%d%H%M` -t $IMAGE:latest --build-arg customca=${{ secrets.CUSTOMCA }}
+      - run: docker push -a $IMAGE
