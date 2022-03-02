@@ -1,0 +1,16 @@
+name: build
+on:
+  workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: quay.io login
+        uses: docker/login-action@v1
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_ROBOT_TOKEN }}
+      - run: docker build . -t quay.io/rh_integration/selenium-standalone-chrome --build-arg customca=${{ secrets.CUSTOMCA }}
+      - run: docker push quay.io/rh_integration/selenium-standalone-chrome
