@@ -2,7 +2,7 @@ name: build
 on:
   workflow_dispatch
 env:
-  IMAGE=quay.io/rh_integration/selenium-standalone-chrome
+  IMAGE: quay.io/rh_integration/selenium-standalone-chrome
 jobs:
   build:
     runs-on: ubuntu-latest
