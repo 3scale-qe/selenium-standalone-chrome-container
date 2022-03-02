@@ -10,4 +10,5 @@ RUN apt update && apt install libnss3-tools && rm -Rf /var/lib/apt/lists/*
 
 USER seluser
 
+RUN mkdir -p $HOME/.pki/nssdb
 RUN certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n customca -i /usr/local/share/ca-certificates/customca.crt
