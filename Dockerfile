@@ -13,4 +13,4 @@ RUN update-ca-certificates \
 USER seluser
 
 RUN mkdir -p $HOME/.pki/nssdb
-RUN certutil -N -d sql:$HOME/.pki/nssdb -A -t "C,," -n customca -i $customca_dest
+RUN certutil -N -d sql:$HOME/.pki/nssdb -t "C,," -n customca -i $customca_dest
