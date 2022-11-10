@@ -27,6 +27,7 @@ jobs:
             type=sha
       - uses: docker/build-push-action@v2
         with:
+          build-args: customca=${{ secrets.CUSTOMCA }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           push: true
