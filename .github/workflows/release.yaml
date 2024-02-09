@@ -1,23 +1,34 @@
-name: build
+name: build chrome webdriver
+
 on:
   workflow_dispatch:
   schedule:
     - cron: '0 0 * * 0'
 
+env:
+  CACERT_CONTENT: ${{ secrets.CA_CERT }}
+  CACERT: custom-ca.crt
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: docker/setup-buildx-action@master
-      - name: quay.io login
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Login to quay.io
         uses: docker/login-action@v1
         with:
           registry: quay.io
           username: ${{ secrets.QUAY_USERNAME }}
           password: ${{ secrets.QUAY_ROBOT_TOKEN }}
-      - uses: docker/metadata-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      - name: Prepare docker build metadata
         id: metadata
+        uses: docker/metadata-action@v4
         with:
           images: |
             quay.io/rh_integration/selenium-standalone-chrome
@@ -25,9 +36,15 @@ jobs:
             latest=true
           tags: |
             type=sha
-      - uses: docker/build-push-action@v2
+
+      - name: Echo CaCert content to file
+        run: echo "$CACERT_CONTENT" > $CACERT
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v2
         with:
-          build-args: customca=${{ secrets.CUSTOMCA }}
+          context: .
+          build-args: customca=${{ env.CACERT }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           push: true
