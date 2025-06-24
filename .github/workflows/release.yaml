@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to push (latest or stable)"
-        required: true
+        description: "Release tag to push (latest, stable or user defined)"
+        required: false
         default: "latest"
 
   schedule:
@@ -32,8 +32,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Set custom date tag
-        run: echo "TAG=$(date +'%Y%m%d')" >> $GITHUB_ENV
+      - name: Set dynamic tags
+        run: |
+          echo "DATE_TAG=$(date +'%Y%m%d')" >> $GITHUB_ENV
+          if [[ -z "${{ github.event.inputs.release_tag }}" ]]; then
+            echo "RELEASE_TAG=latest" >> $GITHUB_ENV
+          else
+            echo "RELEASE_TAG=${{ github.event.inputs.release_tag }}" >> $GITHUB_ENV
+          fi
 
       - name: Prepare docker build metadata
         id: metadata
@@ -42,8 +48,8 @@ jobs:
           images: |
             quay.io/rh_integration/selenium-standalone-chrome
           tags: |
-            type=raw,value=${{ github.event.inputs.release_tag }}
-            type=raw,value=${{ env.TAG }}
+            type=raw,value=${{ env.RELEASE_TAG }}
+            type=raw,value=${{ env.DATE_TAG }}
 
       - name: Echo CaCert content to file
         run: echo "$CACERT_CONTENT" > $CACERT
@@ -56,4 +62,4 @@ jobs:
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           push: true
-          provenance: false  # Disable SBOM/attestation if not needed
+          provenance: false
