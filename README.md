@@ -210,6 +210,35 @@ The Dockerfile:
 - Check container logs: `docker logs <container-name>`
 - On ARM64: Verify you're using a compatible version (Chromium-based images support ARM64)
 
+### Mac-specific issues (Docker Desktop)
+
+**Error: "DevToolsActivePort file doesn't exist"**
+
+This commonly occurs on Mac with Docker Desktop. Try these solutions:
+
+1. **Ensure shared memory is set** (required):
+   ```bash
+   docker run -d -p 4444:4444 --shm-size=2g quay.io/rh_integration/selenium-standalone-chrome:stable
+   ```
+
+2. **If still failing, increase Docker Desktop resources**:
+   - Open Docker Desktop → Settings → Resources
+   - Increase Memory to at least 4GB
+   - Increase Swap to at least 2GB
+   - Click "Apply & Restart"
+
+3. **For persistent issues, use volume mount for /dev/shm**:
+   ```bash
+   docker run -d -p 4444:4444 \
+     -v /dev/shm:/dev/shm \
+     quay.io/rh_integration/selenium-standalone-chrome:stable
+   ```
+
+4. **Check container logs for specific errors**:
+   ```bash
+   docker logs <container-name>
+   ```
+
 ### Tests failing
 - Verify Selenium Grid is ready: `curl http://localhost:4444/wd/hub/status`
 - Check Chromium version matches ChromeDriver
