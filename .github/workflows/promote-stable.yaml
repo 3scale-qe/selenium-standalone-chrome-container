@@ -1,0 +1,158 @@
+name: Promote Version to Stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to promote (optional, defaults to latest-tested.yaml)"
+        required: false
+
+env:
+  CACERT_CONTENT: ${{ secrets.CA_CERT }}
+  CACERT: custom-ca.crt
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Determine version to promote
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            echo "Using manually specified version: $VERSION"
+          else
+            VERSION=$(yq eval '.latest_tested.version' .selenium-versions/versions.yaml)
+            echo "Using latest tested version: $VERSION"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Backup current stable to previous-stable
+        run: |
+          CURRENT_STABLE=$(yq eval '.stable.version' .selenium-versions/versions.yaml)
+          echo "Backing up current stable version: $CURRENT_STABLE"
+
+          yq eval ".previous_stable.version = \"$CURRENT_STABLE\"" -i .selenium-versions/versions.yaml
+          yq eval ".previous_stable.updated_at = \"$(date +%Y-%m-%d)\"" -i .selenium-versions/versions.yaml
+
+      - name: Update stable version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "Promoting version to stable: $VERSION"
+
+          yq eval ".stable.version = \"$VERSION\"" -i .selenium-versions/versions.yaml
+          yq eval ".stable.updated_at = \"$(date +%Y-%m-%d)\"" -i .selenium-versions/versions.yaml
+
+      - name: Login to quay.io
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_ROBOT_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set dynamic tags
+        run: |
+          echo "DATE_TAG=$(date +'%Y%m%d')" >> $GITHUB_ENV
+
+      - name: Echo CaCert content to file
+        run: echo "$CACERT_CONTENT" > $CACERT
+
+      - name: Build and push stable image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            customca=${{ env.CACERT }}
+            SELENIUM_VERSION=${{ steps.version.outputs.version }}
+          tags: |
+            quay.io/rh_integration/selenium-standalone-chrome:stable
+            quay.io/rh_integration/selenium-standalone-chrome:${{ env.DATE_TAG }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          push: true
+          provenance: false
+
+      - name: Commit version changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .selenium-versions/versions.yaml
+          git commit -m "Promote Selenium version ${{ steps.version.outputs.version }} to stable"
+          git push
+
+      - name: Create git tag
+        run: |
+          TAG="selenium-${{ steps.version.outputs.version }}"
+          git tag -a "$TAG" -m "Selenium version ${{ steps.version.outputs.version }} promoted to stable"
+          git push origin "$TAG"
+
+      - name: Create promotion announcement issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = '${{ steps.version.outputs.version }}';
+            const dateTag = '${{ env.DATE_TAG }}';
+            const actor = '${{ github.actor }}';
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Selenium ${version} promoted to stable`,
+              body: `## Version Promotion
+
+            **Version:** ${version}
+            **Promoted by:** @${actor}
+            **Date:** ${dateTag}
+
+            ### Changes
+            - Selenium version ${version} is now tagged as \`stable\`
+            - Also tagged as \`${dateTag}\` for historical reference
+            - Previous stable version backed up to \`previous-stable.yaml\`
+
+            ### Image Tags
+            - \`quay.io/rh_integration/selenium-standalone-chrome:stable\`
+            - \`quay.io/rh_integration/selenium-standalone-chrome:${dateTag}\`
+
+            ### Rollback
+            If issues are discovered, you can rollback by:
+            1. Checking \`previous-stable.yaml\` for the previous version
+            2. Running the **Promote Stable** workflow with that version
+
+            This announcement was automatically created by the promote-stable workflow.
+            `,
+              labels: ['release', 'selenium-version']
+            });
+
+      - name: Create summary
+        run: |
+          echo "## Version Promoted to Stable" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✓ Successfully Promoted" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Image Tags" >> $GITHUB_STEP_SUMMARY
+          echo "- \`quay.io/rh_integration/selenium-standalone-chrome:stable\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`quay.io/rh_integration/selenium-standalone-chrome:${{ env.DATE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Git" >> $GITHUB_STEP_SUMMARY
+          echo "- Version files committed" >> $GITHUB_STEP_SUMMARY
+          echo "- Git tag created: \`selenium-${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The next scheduled build (Sunday) will use this version automatically." >> $GITHUB_STEP_SUMMARY
