@@ -1,0 +1,14 @@
+# Deployment Log
+# Tracks current versions deployed under each tag
+
+latest:
+  selenium_version: "144.0-20260120"
+  deployed_at: "2026-02-03"
+  image_tag: "latest"
+  description: "Current latest build (auto-deployed after testing)"
+
+stable:
+  selenium_version: "144.0-20260120"
+  deployed_at: "2026-02-03"
+  image_tag: "stable"
+  description: "Current production stable build"

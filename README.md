@@ -62,8 +62,8 @@ This repository uses an automated version discovery and testing system to mainta
 All Selenium versions are tracked in a single organized file: `.selenium-versions/versions.yaml`
 
 ```yaml
-stable:          # Current production version (scheduled builds: 1st & 15th)
-candidate:       # Version under evaluation (auto-discovered weekly)
+stable:          # Current production version (manual promotion)
+candidate:       # Version under evaluation (auto-discovered bi-weekly: 1st & 15th)
 latest_tested:   # Most recent successfully tested version
 previous_stable: # Rollback target
 ```
@@ -74,40 +74,46 @@ See [.selenium-versions/README.md](.selenium-versions/README.md) for details.
 
 ### Automated Workflows
 
-#### Discovery (Saturdays, 12:00 UTC)
+#### Automated Discovery & Deploy (1st & 15th, 12:00 UTC)
 - Automatically checks for new Selenium versions
-- Updates candidate version if newer version available
-- Triggers automated testing
-
-#### Testing
-- Builds candidate image
+- Updates candidate version if newer version found
+- Builds multi-arch image (amd64, arm64)
 - Runs comprehensive smoke tests:
   1. Container health check
   2. WebDriver connection test
   3. Real browser interaction test
-- On success: tags as `tested-<version>`
-- On failure: creates GitHub issue
+- **If tests pass**: Auto-deploys as `latest` and date tag (YYYYMMDD)
+- **If tests fail**: Creates GitHub issue with failure details
+- Fully automated, no manual intervention needed
 
-#### Promotion (Manual)
-- Promotes tested version to stable
-- Rebuilds and pushes with `stable` tag
+#### Manual Promotion to Stable
+- Promotes any existing image tag (default: `latest`) to `stable`
+- Re-tags and pushes as stable
+- Updates version tracking and deployment log
 - Creates git tag for audit trail
-- Backs up previous version for rollback
+- Backs up previous stable version for rollback
+- Run when ready for production
 
 ### Manual Operations
 
 ```bash
-# Promote latest tested version to stable
-gh workflow run promote-stable.yaml
+# Promote latest to stable (most common)
+gh workflow run promote-to-stable.yaml
 
-# Promote specific version
-gh workflow run promote-stable.yaml -f version=100.0-20250525
+# Promote specific tag to stable
+gh workflow run promote-to-stable.yaml -f source_tag=20260203
 
-# Test a specific version
-gh workflow run test-candidate.yaml -f version=100.0-20250525
+# Test a specific version (without auto-deploy)
+gh workflow run test-and-deploy.yaml -f version=144.0-20260120
+
+# Test and auto-deploy as latest
+gh workflow run test-and-deploy.yaml -f version=144.0-20260120 -f auto_deploy=true
 
 # Force discovery check
 gh workflow run discover-selenium-version.yaml
+
+# Manual emergency build
+gh workflow run release.yaml -f release_tag=latest
 ```
 
 ## Building Locally
@@ -148,15 +154,23 @@ docker stop selenium && docker rm selenium
 
 ## CI/CD Workflows
 
-### Scheduled Build (1st and 15th of each month, 00:00 UTC)
-- Builds image with stable Selenium version
-- Pushes to Quay.io with date tag
-- Used for regular production releases
+### Automated Discovery & Deploy (1st & 15th, 12:00 UTC)
+- Discovers new Selenium versions from Docker Hub
+- Builds and tests automatically
+- Auto-deploys as `latest` and date tag if tests pass
+- Updates deployment log with latest build info
+- **No manual intervention needed**
 
-### Manual Release
-- Trigger via GitHub Actions
-- Specify custom release tag
-- Useful for emergency builds or custom tags
+### Manual Promotion to Stable
+- Promotes `latest` (or any tag) to `stable`
+- Run when ready for production
+- Updates version tracking and deployment log
+- Backs up previous stable for rollback
+
+### Manual Emergency Build
+- Trigger via GitHub Actions for emergency builds
+- Bypass normal workflow if needed
+- Use for testing specific versions or urgent fixes
 
 ## Repository Structure
 
@@ -164,12 +178,13 @@ docker stop selenium && docker rm selenium
 .
 ├── .github/
 │   └── workflows/
-│       ├── discover-selenium-version.yaml  # Auto-discover new versions
-│       ├── test-candidate.yaml             # Test candidate versions
-│       ├── promote-stable.yaml             # Promote to stable
-│       └── release.yaml                    # Scheduled/manual builds
+│       ├── discover-selenium-version.yaml  # Auto-discover & deploy (1st & 15th)
+│       ├── test-and-deploy.yaml            # Test and optionally deploy versions
+│       ├── promote-to-stable.yaml          # Promote any tag to stable
+│       └── release.yaml                    # Manual emergency builds
 ├── .selenium-versions/
 │   ├── versions.yaml                       # All version tracking (stable, candidate, tested, previous)
+│   ├── deployment-log.yaml                 # Current deployment status (latest, stable)
 │   └── README.md                           # Version management docs
 ├── tests/
 │   ├── smoke-test.py                       # Comprehensive test suite

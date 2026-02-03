@@ -8,42 +8,58 @@ All version information is stored in a single file: **versions.yaml**
 
 ### Structure
 
+**versions.yaml** - Version tracking for discovery and testing:
 ```yaml
 stable:
-  version: "100.0-20250525"
-  updated_at: "2026-02-02"
-  description: "Production version used by release.yaml workflow"
+  version: "144.0-20260120"
+  updated_at: "2026-02-03"
+  description: "Production version"
 
 candidate:
   version: "144.0-20260120"
-  updated_at: "2026-02-02"
-  description: "Version under evaluation, triggers automatic testing"
+  updated_at: "2026-02-03"
+  description: "Version under evaluation"
 
 latest_tested:
-  version: "100.0-20250525"
-  updated_at: "2026-02-02"
-  description: "Most recent version that passed all smoke tests"
+  version: "144.0-20260120"
+  updated_at: "2026-02-03"
+  description: "Most recent tested version"
 
 previous_stable:
-  version: "100.0-20250525"
-  updated_at: "2026-02-02"
-  description: "Backup of previous stable for rollback"
+  version: "144.0-20260120"
+  updated_at: "2026-02-03"
+  description: "Rollback target"
+```
+
+**deployment-log.yaml** - Current deployment tracking:
+```yaml
+latest:
+  selenium_version: "144.0-20260120"
+  deployed_at: "2026-02-03"
+  image_tag: "latest"
+  description: "Current latest build (auto-deployed after testing)"
+
+stable:
+  selenium_version: "144.0-20260120"
+  deployed_at: "2026-02-03"
+  image_tag: "stable"
+  description: "Current production stable build"
 ```
 
 ### Version Sections
 
 **stable** - Current production version
-- Used by the scheduled 1st and 15th builds (release.yaml)
-- Updated only through the "Promote Stable" workflow
+- Updated only through the "Promote to Stable" workflow (manual)
 - Should always point to a tested, verified version
+- Used for production deployments
 
 **candidate** - Version under evaluation
-- Auto-updated by the "Discover Selenium Version" workflow (Saturdays)
+- Auto-updated by the "Discover Selenium Version" workflow (1st & 15th of month)
 - Triggers automatic testing when updated
 - May not be tested or stable
 
 **latest_tested** - Most recent tested version
-- Updated automatically when test-candidate workflow succeeds
+- Updated automatically when test-and-deploy workflow succeeds
 - Default target for promotion to stable
 - Safe to promote, but awaits manual approval
 
@@ -54,22 +70,22 @@ previous_stable:
 
 ## Workflows
 
-### 1. Discover Selenium Version (Saturdays, 12:00 UTC)
+### 1. Automated Discovery & Deploy (1st & 15th of month, 12:00 UTC)
 - Queries Docker Hub for latest selenium/standalone-chromium version
-- Compares with current candidate version
-- If newer: updates candidate and triggers testing
+- If newer version found:
+  - Updates candidate version
+  - Builds multi-arch image (amd64, arm64)
+  - Runs comprehensive smoke tests
+  - **If tests pass**: Auto-deploys as `latest` and date tag
+  - **If tests fail**: Creates GitHub issue
+- Fully automated, no manual intervention
 
-### 2. Test Candidate
-- Builds multi-arch image (amd64, arm64) with candidate version
-- Runs comprehensive smoke tests
-- On success: tags as `tested-<version>` and updates latest_tested
-- On failure: creates GitHub issue with details
-
-### 3. Promote Stable (Manual)
-- Promotes tested version to stable
+### 2. Manual Promote to Stable
+- Takes any existing image tag (default: `latest`)
+- Re-tags as `stable`
 - Backs up current stable to previous_stable
-- Rebuilds multi-arch image and pushes with `stable` and date tags
-- Creates git tag and announcement issue
+- Updates version tracking and deployment log
+- Use when ready for production
 
 ## Version Format
 
@@ -79,8 +95,9 @@ Example: `100.0-20250525`
 - `100.0` = Selenium Grid version
 - `20250525` = Image build date (May 25, 2025)
 
-## Accessing Versions
+## Accessing Version Information
 
+### Current Versions
 ```bash
 # Read stable version
 yq eval '.stable.version' .selenium-versions/versions.yaml
@@ -90,46 +107,50 @@ yq eval '.candidate.version' .selenium-versions/versions.yaml
 
 # Read latest tested version
 yq eval '.latest_tested.version' .selenium-versions/versions.yaml
+```
 
-# Read previous stable version
-yq eval '.previous_stable.version' .selenium-versions/versions.yaml
+### Deployment Status
+```bash
+# Check what's currently deployed as latest
+yq eval '.latest' .selenium-versions/deployment-log.yaml
+
+# Check what's currently deployed as stable
+yq eval '.stable' .selenium-versions/deployment-log.yaml
 ```
 
 ## Typical Workflow
 
 ```
-Saturday 12:00 UTC
+1st & 15th at 12:00 UTC
   ↓
 Discovery finds new version
   ↓
-Updates candidate.yaml → Triggers test
+Updates candidate version → Triggers test
   ↓
-Tests pass → Tag as tested-<version>
+Tests pass → Auto-deploy as latest + date tag
+  ↓
+Updates latest_tested version
   ↓
 Manual review
   ↓
-Promote to stable
-  ↓
-1st and 15th 00:00 UTC
-  ↓
-Scheduled build uses stable version
+Promote to stable (manual workflow)
 ```
 
 ## Manual Operations
 
-### Promote Latest Tested Version
+### Promote Latest to Stable
 ```bash
-gh workflow run promote-stable.yaml
+gh workflow run promote-to-stable.yaml
 ```
 
-### Promote Specific Version
+### Promote Specific Tag to Stable
 ```bash
-gh workflow run promote-stable.yaml -f version=100.0-20250525
+gh workflow run promote-to-stable.yaml -f source_tag=20260203
 ```
 
 ### Test Specific Version
 ```bash
-gh workflow run test-candidate.yaml -f version=100.0-20250525
+gh workflow run test-and-deploy.yaml -f version=144.0-20260120
 ```
 
 ### Rollback to Previous Version

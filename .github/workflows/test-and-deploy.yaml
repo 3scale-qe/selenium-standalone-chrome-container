@@ -1,14 +1,15 @@
-name: Test Candidate Version
+name: Test and Deploy Selenium Version
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Selenium version to test (optional, defaults to candidate.yaml)"
+        description: "Selenium version to test (optional, defaults to candidate)"
         required: false
-  push:
-    branches:
-      - selenium-version-management
+      auto_deploy:
+        description: "Auto-deploy as latest if tests pass (true/false)"
+        required: false
+        default: 'false'
 
 env:
   CACERT_CONTENT: ${{ secrets.CA_CERT }}
@@ -111,13 +112,49 @@ jobs:
         if: always()
         run: docker stop selenium || true
 
-      - name: Push tested image on success
+      - name: Push tested image
         if: success()
         run: |
           docker push quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
           docker tag quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }} \
             quay.io/rh_integration/selenium-standalone-chrome:tested-${{ steps.version.outputs.version }}
           docker push quay.io/rh_integration/selenium-standalone-chrome:tested-${{ steps.version.outputs.version }}
+
+      - name: Auto-deploy as latest (if enabled)
+        if: success() && github.event.inputs.auto_deploy == 'true'
+        run: |
+          DATE_TAG=$(date +'%Y%m%d')
+
+          # Tag and push as latest
+          docker tag quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }} \
+            quay.io/rh_integration/selenium-standalone-chrome:latest
+          docker push quay.io/rh_integration/selenium-standalone-chrome:latest
+
+          # Tag and push with date
+          docker tag quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }} \
+            quay.io/rh_integration/selenium-standalone-chrome:$DATE_TAG
+          docker push quay.io/rh_integration/selenium-standalone-chrome:$DATE_TAG
+
+          echo "DATE_TAG=$DATE_TAG" >> $GITHUB_ENV
+
+      - name: Log deployment to history
+        if: success() && github.event.inputs.auto_deploy == 'true'
+        run: |
+          # Update latest deployment info
+          yq eval ".latest.selenium_version = \"${{ steps.version.outputs.version }}\"" -i .selenium-versions/deployment-log.yaml
+          yq eval ".latest.deployed_at = \"$(date +%Y-%m-%d)\"" -i .selenium-versions/deployment-log.yaml
+          yq eval ".latest.image_tag = \"latest\"" -i .selenium-versions/deployment-log.yaml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .selenium-versions/deployment-log.yaml
+
+          if git diff --staged --quiet; then
+            echo "No deployment log changes"
+          else
+            git commit -m "Log deployment of ${{ steps.version.outputs.version }} as latest"
+            git push
+          fi
 
       - name: Update latest-tested version on success
         if: success()
@@ -181,8 +218,13 @@ jobs:
             echo "### ✓ Tests Passed" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "- Image pushed as: \`tested-${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-            echo "- Ready for promotion to stable" >> $GITHUB_STEP_SUMMARY
-            echo "- Run the **Promote Stable** workflow to deploy" >> $GITHUB_STEP_SUMMARY
+
+            if [ "${{ github.event.inputs.auto_deploy }}" == "true" ]; then
+              echo "- **Auto-deployed as \`latest\` and date tag**" >> $GITHUB_STEP_SUMMARY
+              echo "- Ready for promotion to stable when you're ready" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- Ready for manual deployment or promotion to stable" >> $GITHUB_STEP_SUMMARY
+            fi
           else
             echo "### ✗ Tests Failed" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY

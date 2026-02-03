@@ -1,16 +1,12 @@
-name: build chrome webdriver
+name: Manual Build and Release
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to push (latest, stable or user defined)"
+        description: "Release tag to push (latest, stable or custom)"
         required: false
         default: "latest"
-
-  schedule:
-    # Run twice a month: 1st and 15th at midnight UTC
-    - cron: '0 0 1,15 * *'
 
 env:
   CACERT_CONTENT: ${{ secrets.CA_CERT }}
