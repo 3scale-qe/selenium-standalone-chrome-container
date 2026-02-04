@@ -159,7 +159,7 @@ gh workflow run test-and-deploy.yaml -f version=144.0-20260120
 yq eval '.previous_stable.version' .selenium-versions/versions.yaml
 
 # Promote it
-gh workflow run promote-stable.yaml -f version=$(yq eval '.previous_stable.version' .selenium-versions/versions.yaml)
+gh workflow run promote-to-stable.yaml -f source_tag=$(yq eval '.previous_stable.version' .selenium-versions/versions.yaml)
 ```
 
 ## Local Testing

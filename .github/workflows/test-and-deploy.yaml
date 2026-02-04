@@ -115,25 +115,25 @@ jobs:
       - name: Push tested image
         if: success()
         run: |
-          docker push quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
-          docker tag quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }} \
-            quay.io/rh_integration/selenium-standalone-chrome:tested-${{ steps.version.outputs.version }}
-          docker push quay.io/rh_integration/selenium-standalone-chrome:tested-${{ steps.version.outputs.version }}
+          # Create multi-arch tested tag from candidate (preserves both amd64 and arm64)
+          docker buildx imagetools create \
+            --tag quay.io/rh_integration/selenium-standalone-chrome:tested-${{ steps.version.outputs.version }} \
+            quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
 
       - name: Auto-deploy as latest (if enabled)
         if: success() && github.event.inputs.auto_deploy == 'true'
         run: |
           DATE_TAG=$(date +'%Y%m%d')
 
-          # Tag and push as latest
-          docker tag quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }} \
-            quay.io/rh_integration/selenium-standalone-chrome:latest
-          docker push quay.io/rh_integration/selenium-standalone-chrome:latest
+          # Create multi-arch latest tag from candidate (preserves both amd64 and arm64)
+          docker buildx imagetools create \
+            --tag quay.io/rh_integration/selenium-standalone-chrome:latest \
+            quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
 
-          # Tag and push with date
-          docker tag quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }} \
-            quay.io/rh_integration/selenium-standalone-chrome:$DATE_TAG
-          docker push quay.io/rh_integration/selenium-standalone-chrome:$DATE_TAG
+          # Create multi-arch date tag from candidate (preserves both amd64 and arm64)
+          docker buildx imagetools create \
+            --tag quay.io/rh_integration/selenium-standalone-chrome:$DATE_TAG \
+            quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
 
           echo "DATE_TAG=$DATE_TAG" >> $GITHUB_ENV
 

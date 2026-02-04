@@ -80,12 +80,10 @@ jobs:
 
       - name: Re-tag and push as stable
         run: |
-          # Tag as stable
-          docker tag quay.io/rh_integration/selenium-standalone-chrome:${{ steps.source.outputs.tag }} \
-            quay.io/rh_integration/selenium-standalone-chrome:stable
-
-          # Push stable tag
-          docker push quay.io/rh_integration/selenium-standalone-chrome:stable
+          # Create multi-arch stable tag from source (preserves both amd64 and arm64)
+          docker buildx imagetools create \
+            --tag quay.io/rh_integration/selenium-standalone-chrome:stable \
+            quay.io/rh_integration/selenium-standalone-chrome:${{ steps.source.outputs.tag }}
 
       - name: Log deployment to history
         run: |
