@@ -3,10 +3,9 @@
 
 latest:
   selenium_version: "144.0-20260120"
-  deployed_at: "2026-02-03"
+  deployed_at: "2026-02-04"
   image_tag: "latest"
   description: "Current latest build (auto-deployed after testing)"
-
 stable:
   selenium_version: "144.0-20260120"
   deployed_at: "2026-02-03"
