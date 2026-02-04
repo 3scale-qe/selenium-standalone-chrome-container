@@ -1,22 +1,33 @@
-name: Test and Deploy Selenium Version
+name: Build Test and Deploy
 
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Selenium version to test (optional, defaults to candidate)"
+      selenium_version:
+        description: "Selenium version to build (optional, fetches latest from Docker Hub if not specified)"
         required: false
-      auto_deploy:
-        description: "Auto-deploy as latest if tests pass (true/false)"
+      release_tag:
+        description: "Release tag to push (default: latest)"
         required: false
-        default: 'false'
+        default: "latest"
+  workflow_call:
+    inputs:
+      selenium_version:
+        description: "Selenium version to build"
+        required: true
+        type: string
+      release_tag:
+        description: "Release tag to push"
+        required: false
+        type: string
+        default: "latest"
 
 env:
   CACERT_CONTENT: ${{ secrets.CA_CERT }}
   CACERT: custom-ca.crt
 
 jobs:
-  test:
+  build-test-deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -30,17 +41,33 @@ jobs:
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Determine version to test
+      - name: Determine Selenium version
         id: version
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-            echo "Using manually specified version: $VERSION"
+          if [ -n "${{ inputs.selenium_version }}" ]; then
+            VERSION="${{ inputs.selenium_version }}"
+            echo "Using specified version: $VERSION"
           else
-            VERSION=$(yq eval '.candidate.version' .selenium-versions/versions.yaml)
-            echo "Using candidate version: $VERSION"
+            # Fetch latest version from Docker Hub
+            echo "Fetching latest selenium/standalone-chromium version from Docker Hub..."
+            VERSION=$(curl -s "https://hub.docker.com/v2/repositories/selenium/standalone-chromium/tags/?page_size=100" | \
+              jq -r '.results[].name' | \
+              grep -E '^[0-9]+\.[0-9]+-[0-9]{8}$' | \
+              sort -V | \
+              tail -n 1)
+            echo "Latest version from Docker Hub: $VERSION"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Determine release tag
+        id: release
+        run: |
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            RELEASE_TAG="${{ inputs.release_tag }}"
+          else
+            RELEASE_TAG="latest"
+          fi
+          echo "tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
 
       - name: Login to quay.io
         uses: docker/login-action@v3
@@ -63,20 +90,20 @@ jobs:
           build-args: |
             customca=${{ env.CACERT }}
             SELENIUM_VERSION=${{ steps.version.outputs.version }}
-          tags: quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
+          tags: quay.io/rh_integration/selenium-standalone-chrome:test-${{ steps.version.outputs.version }}
           push: true
           provenance: false
 
       - name: Pull and start Selenium container
         run: |
           # Pull the image for current architecture
-          docker pull quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
+          docker pull quay.io/rh_integration/selenium-standalone-chrome:test-${{ steps.version.outputs.version }}
 
           docker run -d \
             --name selenium \
             --shm-size=2g \
             -p 4444:4444 \
-            quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
+            quay.io/rh_integration/selenium-standalone-chrome:test-${{ steps.version.outputs.version }}
 
           echo "Waiting for Selenium to start..."
           sleep 5
@@ -112,33 +139,27 @@ jobs:
         if: always()
         run: docker stop selenium || true
 
-      - name: Push tested image
+      - name: Push release images
         if: success()
-        run: |
-          # Create multi-arch tested tag from candidate (preserves both amd64 and arm64)
-          docker buildx imagetools create \
-            --tag quay.io/rh_integration/selenium-standalone-chrome:tested-${{ steps.version.outputs.version }} \
-            quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
-
-      - name: Auto-deploy as latest (if enabled)
-        if: success() && github.event.inputs.auto_deploy == 'true'
         run: |
           DATE_TAG=$(date +'%Y%m%d')
 
-          # Create multi-arch latest tag from candidate (preserves both amd64 and arm64)
+          # Create multi-arch release tag from test image (preserves both amd64 and arm64)
           docker buildx imagetools create \
-            --tag quay.io/rh_integration/selenium-standalone-chrome:latest \
-            quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
+            --tag quay.io/rh_integration/selenium-standalone-chrome:${{ steps.release.outputs.tag }} \
+            quay.io/rh_integration/selenium-standalone-chrome:test-${{ steps.version.outputs.version }}
 
-          # Create multi-arch date tag from candidate (preserves both amd64 and arm64)
-          docker buildx imagetools create \
-            --tag quay.io/rh_integration/selenium-standalone-chrome:$DATE_TAG \
-            quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
+          # Also tag with date if pushing as latest
+          if [ "${{ steps.release.outputs.tag }}" == "latest" ]; then
+            docker buildx imagetools create \
+              --tag quay.io/rh_integration/selenium-standalone-chrome:$DATE_TAG \
+              quay.io/rh_integration/selenium-standalone-chrome:test-${{ steps.version.outputs.version }}
 
-          echo "DATE_TAG=$DATE_TAG" >> $GITHUB_ENV
+            echo "DATE_TAG=$DATE_TAG" >> $GITHUB_ENV
+          fi
 
-      - name: Log deployment to history
-        if: success() && github.event.inputs.auto_deploy == 'true'
+      - name: Update deployment log
+        if: success() && steps.release.outputs.tag == 'latest'
         run: |
           # Update latest deployment info
           yq eval ".latest.selenium_version = \"${{ steps.version.outputs.version }}\"" -i .selenium-versions/deployment-log.yaml
@@ -152,25 +173,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No deployment log changes"
           else
-            git commit -m "Log deployment of ${{ steps.version.outputs.version }} as latest"
-            git push
-          fi
-
-      - name: Update latest-tested version on success
-        if: success()
-        run: |
-          yq eval ".latest_tested.version = \"${{ steps.version.outputs.version }}\"" -i .selenium-versions/versions.yaml
-          yq eval ".latest_tested.updated_at = \"$(date +%Y-%m-%d)\"" -i .selenium-versions/versions.yaml
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .selenium-versions/versions.yaml
-
-          # Only commit if there are changes
-          if git diff --staged --quiet; then
-            echo "No changes to commit - version already up to date"
-          else
-            git commit -m "Update latest-tested to ${{ steps.version.outputs.version }}"
+            git commit -m "Update latest deployment to ${{ steps.version.outputs.version }}"
             git push
           fi
 
@@ -185,25 +188,26 @@ jobs:
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Test failure for Selenium version ${version}`,
+              title: `Build test failure for Selenium version ${version}`,
               body: `## Test Failure Report
 
             **Version:** ${version}
+            **Target Tag:** ${{ steps.release.outputs.tag }}
             **Workflow Run:** ${runUrl}
 
-            The smoke tests failed for candidate version ${version}.
+            The smoke tests failed for version ${version}.
 
             ### Next Steps
             1. Review the test artifacts in the workflow run
             2. Check the container logs for errors
             3. Verify the version is compatible
-            4. Consider skipping this version if issues persist
+            4. Consider using a different version
 
             ### Artifacts
             - Container logs
             - Screenshot (if captured)
 
-            This issue was automatically created by the test-candidate workflow.
+            This issue was automatically created by the build-test-deploy workflow.
             `,
               labels: ['automated-test', 'selenium-version']
             });
@@ -211,19 +215,20 @@ jobs:
       - name: Create summary
         if: always()
         run: |
-          echo "## Test Results for Version ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "## Build Test and Deploy Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Release Tag:** ${{ steps.release.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ steps.tests.result }}" == "0" ]; then
             echo "### ✓ Tests Passed" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "- Image pushed as: \`tested-${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Image pushed as: \`${{ steps.release.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
 
-            if [ "${{ github.event.inputs.auto_deploy }}" == "true" ]; then
-              echo "- **Auto-deployed as \`latest\` and date tag**" >> $GITHUB_STEP_SUMMARY
-              echo "- Ready for promotion to stable when you're ready" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "- Ready for manual deployment or promotion to stable" >> $GITHUB_STEP_SUMMARY
+            if [ "${{ steps.release.outputs.tag }}" == "latest" ]; then
+              echo "- Also tagged with date: \`${{ env.DATE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+              echo "- Deployment log updated" >> $GITHUB_STEP_SUMMARY
             fi
           else
             echo "### ✗ Tests Failed" >> $GITHUB_STEP_SUMMARY

@@ -1,22 +1,13 @@
 # Selenium Version Tracking
-# This file tracks all Selenium standalone-chromium versions used in this project
+# This file tracks stable version for the promote-to-stable workflow
 # Multi-architecture support: linux/amd64, linux/arm64
 
-# Current stable version (used by production builds and scheduled releases)
+# Current stable version (promoted manually from latest)
 stable:
   version: "144.0-20260120"
   updated_at: "2026-02-03"
-  description: "Production version (scheduled builds: 1st and 15th of month)"
-# Candidate version (auto-discovered, under evaluation)
-candidate:
-  version: "144.0-20260120"
-  updated_at: "2026-02-03"
-  description: "Version under evaluation, triggers automatic testing"
-# Latest tested version (most recent successfully tested)
-latest_tested:
-  version: "144.0-20260120"
-  updated_at: "2026-02-03"
-  description: "Most recent version that passed all smoke tests"
+  description: "Production stable version"
+
 # Previous stable version (rollback target)
 previous_stable:
   version: "144.0-20260120"

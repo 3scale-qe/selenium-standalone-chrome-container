@@ -1,0 +1,64 @@
+name: Discover and Deploy New Version
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run every 2 weeks (1st and 15th of month) at noon UTC
+    - cron: '0 12 1,15 * *'
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      has_new_version: ${{ steps.check.outputs.has_new }}
+      new_version: ${{ steps.check.outputs.new_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Fetch latest Selenium version from Docker Hub
+        id: fetch
+        run: |
+          echo "Querying Docker Hub for latest selenium/standalone-chromium version..."
+          LATEST_VERSION=$(curl -s "https://hub.docker.com/v2/repositories/selenium/standalone-chromium/tags/?page_size=100" | \
+            jq -r '.results[].name' | \
+            grep -E '^[0-9]+\.[0-9]+-[0-9]{8}$' | \
+            sort -V | \
+            tail -n 1)
+
+          echo "Latest version from Docker Hub: $LATEST_VERSION"
+          echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if new version available
+        id: check
+        run: |
+          LATEST_VERSION="${{ steps.fetch.outputs.version }}"
+          CURRENT_VERSION=$(yq eval '.latest.selenium_version' .selenium-versions/deployment-log.yaml)
+
+          echo "Current deployed version: $CURRENT_VERSION"
+          echo "Latest available version: $LATEST_VERSION"
+
+          if [ "$LATEST_VERSION" != "$CURRENT_VERSION" ]; then
+            echo "New version available!"
+            echo "has_new=true" >> $GITHUB_OUTPUT
+            echo "new_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "Already on latest version"
+            echo "has_new=false" >> $GITHUB_OUTPUT
+          fi
+
+  deploy:
+    needs: discover
+    if: needs.discover.outputs.has_new_version == 'true'
+    uses: ./.github/workflows/build-test-deploy.yaml
+    with:
+      selenium_version: ${{ needs.discover.outputs.new_version }}
+      release_tag: latest
+    secrets: inherit
