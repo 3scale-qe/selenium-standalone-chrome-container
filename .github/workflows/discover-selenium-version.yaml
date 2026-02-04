@@ -1,0 +1,110 @@
+name: Discover and Deploy New Selenium Version
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run every 2 weeks (1st and 15th of month) at noon UTC
+    - cron: '0 12 1,15 * *'
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Query Docker Hub for latest version
+        id: latest
+        run: |
+          # Query Docker Hub API for latest selenium/standalone-chromium tag
+          LATEST_VERSION=$(curl -s "https://hub.docker.com/v2/repositories/selenium/standalone-chromium/tags?page_size=100&ordering=-name" | \
+            python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          tags = [t['name'] for t in data['results']]
+          # Filter for version-date format and get the latest
+          versioned = [t for t in tags if '-2025' in t or '-2026' in t or '-2027' in t]
+          if versioned:
+              print(versioned[0])
+          " | head -1)
+
+          if [ -z "$LATEST_VERSION" ]; then
+            echo "Error: Could not determine latest version"
+            exit 1
+          fi
+
+          echo "Latest version found: $LATEST_VERSION"
+          echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check current candidate version
+        id: current
+        run: |
+          CURRENT_VERSION=$(yq eval '.candidate.version' .selenium-versions/versions.yaml)
+          echo "Current candidate version: $CURRENT_VERSION"
+          echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Compare versions and update candidate
+        id: update
+        run: |
+          LATEST="${{ steps.latest.outputs.version }}"
+          CURRENT="${{ steps.current.outputs.version }}"
+
+          if [ "$LATEST" != "$CURRENT" ]; then
+            echo "New version detected: $LATEST (current: $CURRENT)"
+
+            # Update candidate version in versions.yaml
+            yq eval ".candidate.version = \"$LATEST\"" -i .selenium-versions/versions.yaml
+            yq eval ".candidate.updated_at = \"$(date +%Y-%m-%d)\"" -i .selenium-versions/versions.yaml
+
+            echo "updated=true" >> $GITHUB_OUTPUT
+            echo "new_version=$LATEST" >> $GITHUB_OUTPUT
+          else
+            echo "No new version available (current: $CURRENT)"
+            echo "updated=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit updated candidate version
+        if: steps.update.outputs.updated == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .selenium-versions/versions.yaml
+          git commit -m "Update candidate version to ${{ steps.update.outputs.new_version }}"
+          git push
+
+      - name: Trigger test and deploy workflow
+        if: steps.update.outputs.updated == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'test-and-deploy.yaml',
+              ref: 'main',
+              inputs: {
+                version: '${{ steps.update.outputs.new_version }}',
+                auto_deploy: 'true'
+              }
+            });
+
+      - name: Create summary
+        run: |
+          echo "## Selenium Version Discovery" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Current Candidate:** ${{ steps.current.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Latest Available:** ${{ steps.latest.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.update.outputs.updated }}" == "true" ]; then
+            echo "- **Status:** ✓ Updated to new version" >> $GITHUB_STEP_SUMMARY
+            echo "- **Test Workflow:** Triggered automatically" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Status:** No update needed" >> $GITHUB_STEP_SUMMARY
+          fi

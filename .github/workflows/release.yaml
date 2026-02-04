@@ -1,15 +1,12 @@
-name: build chrome webdriver
+name: Manual Build and Release
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to push (latest, stable or user defined)"
+        description: "Release tag to push (latest, stable or custom)"
         required: false
         default: "latest"
-
-  schedule:
-    - cron: '0 0 * * 0'
 
 env:
   CACERT_CONTENT: ${{ secrets.CA_CERT }}
@@ -21,6 +18,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Read stable Selenium version
+        id: selenium_version
+        run: |
+          SELENIUM_VERSION=$(yq eval '.stable.version' .selenium-versions/versions.yaml)
+          echo "Using stable Selenium version: $SELENIUM_VERSION"
+          echo "version=$SELENIUM_VERSION" >> $GITHUB_OUTPUT
 
       - name: Login to quay.io
         uses: docker/login-action@v3
@@ -58,7 +67,10 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          build-args: customca=${{ env.CACERT }}
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            customca=${{ env.CACERT }}
+            SELENIUM_VERSION=${{ steps.selenium_version.outputs.version }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           push: true

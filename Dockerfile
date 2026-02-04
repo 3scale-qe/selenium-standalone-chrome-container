@@ -1,4 +1,5 @@
-FROM selenium/standalone-chrome
+ARG SELENIUM_VERSION=144.0-20260120
+FROM selenium/standalone-chromium:${SELENIUM_VERSION}
 
 # Retrieve certificate content from GitHub secret
 ARG customca
@@ -24,3 +25,6 @@ RUN mkdir -p $HOME/.pki/nssdb
 
 # Add the custom CA certificate to NSS database
 RUN certutil -d sql:$HOME/.pki/nssdb -A -t "C,," -n customca -i $customca_dest
+
+# Label for multi-arch support
+LABEL org.opencontainers.image.description="Selenium standalone Chromium with custom CA (multi-arch: amd64, arm64)"

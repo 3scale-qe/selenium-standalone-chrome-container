@@ -1,0 +1,233 @@
+name: Test and Deploy Selenium Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Selenium version to test (optional, defaults to candidate)"
+        required: false
+      auto_deploy:
+        description: "Auto-deploy as latest if tests pass (true/false)"
+        required: false
+        default: 'false'
+
+env:
+  CACERT_CONTENT: ${{ secrets.CA_CERT }}
+  CACERT: custom-ca.crt
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Determine version to test
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            echo "Using manually specified version: $VERSION"
+          else
+            VERSION=$(yq eval '.candidate.version' .selenium-versions/versions.yaml)
+            echo "Using candidate version: $VERSION"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Login to quay.io
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_ROBOT_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Echo CaCert content to file
+        run: echo "$CACERT_CONTENT" > $CACERT
+
+      - name: Build test image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            customca=${{ env.CACERT }}
+            SELENIUM_VERSION=${{ steps.version.outputs.version }}
+          tags: quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
+          push: true
+          provenance: false
+
+      - name: Pull and start Selenium container
+        run: |
+          # Pull the image for current architecture
+          docker pull quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
+
+          docker run -d \
+            --name selenium \
+            --shm-size=2g \
+            -p 4444:4444 \
+            quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
+
+          echo "Waiting for Selenium to start..."
+          sleep 5
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install selenium requests
+
+      - name: Run smoke tests
+        id: tests
+        run: |
+          python3 tests/smoke-test.py
+          echo "result=$?" >> $GITHUB_OUTPUT
+
+      - name: Collect container logs
+        if: always()
+        run: |
+          echo "=== Container Logs ===" > selenium-logs.txt
+          docker logs selenium >> selenium-logs.txt 2>&1 || echo "Failed to collect logs" >> selenium-logs.txt
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ steps.version.outputs.version }}
+          path: |
+            selenium-logs.txt
+            /tmp/selenium-test-screenshot.png
+          if-no-files-found: warn
+
+      - name: Stop container
+        if: always()
+        run: docker stop selenium || true
+
+      - name: Push tested image
+        if: success()
+        run: |
+          # Create multi-arch tested tag from candidate (preserves both amd64 and arm64)
+          docker buildx imagetools create \
+            --tag quay.io/rh_integration/selenium-standalone-chrome:tested-${{ steps.version.outputs.version }} \
+            quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
+
+      - name: Auto-deploy as latest (if enabled)
+        if: success() && github.event.inputs.auto_deploy == 'true'
+        run: |
+          DATE_TAG=$(date +'%Y%m%d')
+
+          # Create multi-arch latest tag from candidate (preserves both amd64 and arm64)
+          docker buildx imagetools create \
+            --tag quay.io/rh_integration/selenium-standalone-chrome:latest \
+            quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
+
+          # Create multi-arch date tag from candidate (preserves both amd64 and arm64)
+          docker buildx imagetools create \
+            --tag quay.io/rh_integration/selenium-standalone-chrome:$DATE_TAG \
+            quay.io/rh_integration/selenium-standalone-chrome:candidate-${{ steps.version.outputs.version }}
+
+          echo "DATE_TAG=$DATE_TAG" >> $GITHUB_ENV
+
+      - name: Log deployment to history
+        if: success() && github.event.inputs.auto_deploy == 'true'
+        run: |
+          # Update latest deployment info
+          yq eval ".latest.selenium_version = \"${{ steps.version.outputs.version }}\"" -i .selenium-versions/deployment-log.yaml
+          yq eval ".latest.deployed_at = \"$(date +%Y-%m-%d)\"" -i .selenium-versions/deployment-log.yaml
+          yq eval ".latest.image_tag = \"latest\"" -i .selenium-versions/deployment-log.yaml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .selenium-versions/deployment-log.yaml
+
+          if git diff --staged --quiet; then
+            echo "No deployment log changes"
+          else
+            git commit -m "Log deployment of ${{ steps.version.outputs.version }} as latest"
+            git push
+          fi
+
+      - name: Update latest-tested version on success
+        if: success()
+        run: |
+          yq eval ".latest_tested.version = \"${{ steps.version.outputs.version }}\"" -i .selenium-versions/versions.yaml
+          yq eval ".latest_tested.updated_at = \"$(date +%Y-%m-%d)\"" -i .selenium-versions/versions.yaml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .selenium-versions/versions.yaml
+
+          # Only commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No changes to commit - version already up to date"
+          else
+            git commit -m "Update latest-tested to ${{ steps.version.outputs.version }}"
+            git push
+          fi
+
+      - name: Create issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = '${{ steps.version.outputs.version }}';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Test failure for Selenium version ${version}`,
+              body: `## Test Failure Report
+
+            **Version:** ${version}
+            **Workflow Run:** ${runUrl}
+
+            The smoke tests failed for candidate version ${version}.
+
+            ### Next Steps
+            1. Review the test artifacts in the workflow run
+            2. Check the container logs for errors
+            3. Verify the version is compatible
+            4. Consider skipping this version if issues persist
+
+            ### Artifacts
+            - Container logs
+            - Screenshot (if captured)
+
+            This issue was automatically created by the test-candidate workflow.
+            `,
+              labels: ['automated-test', 'selenium-version']
+            });
+
+      - name: Create summary
+        if: always()
+        run: |
+          echo "## Test Results for Version ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.tests.result }}" == "0" ]; then
+            echo "### ✓ Tests Passed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- Image pushed as: \`tested-${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+
+            if [ "${{ github.event.inputs.auto_deploy }}" == "true" ]; then
+              echo "- **Auto-deployed as \`latest\` and date tag**" >> $GITHUB_STEP_SUMMARY
+              echo "- Ready for promotion to stable when you're ready" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- Ready for manual deployment or promotion to stable" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "### ✗ Tests Failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- Check artifacts for details" >> $GITHUB_STEP_SUMMARY
+            echo "- Issue created automatically" >> $GITHUB_STEP_SUMMARY
+          fi
