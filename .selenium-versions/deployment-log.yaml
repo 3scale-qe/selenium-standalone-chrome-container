@@ -2,8 +2,8 @@
 # Tracks current versions deployed under each tag
 
 latest:
-  selenium_version: "144.0-20260202"
-  deployed_at: "2026-02-15"
+  selenium_version: "145.0-20260222"
+  deployed_at: "2026-03-01"
   image_tag: "latest"
   description: "Current latest build (auto-deployed after testing)"
 stable:
